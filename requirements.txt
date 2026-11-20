@@ -1,7 +1,7 @@
-streamlit>=1.35
+streamlit>=1.55
 yfinance>=0.2.40
 pandas>=2.0
-requests>=2.32
+requests>=2.31
 numpy>=1.26
 scikit-learn>=1.4
 plotly>=5.20
