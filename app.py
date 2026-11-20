@@ -5,6 +5,7 @@ Educational use only. Not financial advice.
 """
 import io
 import json
+import re
 import warnings
 
 import numpy as np
@@ -12,7 +13,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 from plotly.subplots import make_subplots
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
@@ -24,6 +24,7 @@ warnings.filterwarnings("ignore")
 
 INK, MUTED, TEAL, UP, DOWN, AMBER = "#0E1B2C", "#5B6B7F", "#0A7C86", "#138A5B", "#C8374B", "#E0A030"
 ENSEMBLE = ["Ridge", "Random Forest", "Gradient Boosting"]
+RANGES = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252, "2Y": 504, "All": 10**6}  # trading days
 ANCHOR = 0.06  # long-run market growth assumption (log return per year)
 TAPE_INDIA = ("^NSEI", "^BSESN", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS", "ITC.NS")
 LABELS = {"^GSPC": "S&P 500", "^NSEI": "NIFTY 50", "^BSESN": "SENSEX"}
@@ -49,6 +50,32 @@ FALLBACK = {
     "BANKBARODA": "Bank of Baroda", "HAL": "Hindustan Aeronautics", "BEL": "Bharat Electronics",
     "TRENT": "Trent", "PAYTM": "One 97 Communications",
 }
+
+UA = "Mozilla/5.0"
+FALLBACK.update({
+    "INDIGO": "InterGlobe Aviation", "DLF": "DLF", "GODREJCP": "Godrej Consumer", "HAVELLS": "Havells India",
+    "SIEMENS": "Siemens", "ABB": "ABB India", "AMBUJACEM": "Ambuja Cements", "ACC": "ACC",
+    "SHREECEM": "Shree Cement", "BERGEPAINT": "Berger Paints", "COLPAL": "Colgate-Palmolive India",
+    "DABUR": "Dabur India", "MARICO": "Marico", "UBL": "United Breweries", "PIIND": "PI Industries",
+    "SRF": "SRF", "TVSMOTOR": "TVS Motor", "ASHOKLEY": "Ashok Leyland", "BOSCHLTD": "Bosch",
+    "MRF": "MRF", "MOTHERSON": "Samvardhana Motherson", "BHARATFORG": "Bharat Forge",
+    "CUMMINSIND": "Cummins India", "POLYCAB": "Polycab India", "DIXON": "Dixon Technologies",
+    "PERSISTENT": "Persistent Systems", "LTIM": "LTIMindtree", "MPHASIS": "Mphasis", "COFORGE": "Coforge",
+    "NAUKRI": "Info Edge (Naukri)", "POLICYBZR": "PB Fintech (Policybazaar)", "LICI": "Life Insurance Corporation",
+    "ICICIGI": "ICICI Lombard", "ICICIPRULI": "ICICI Prudential Life", "SBICARD": "SBI Cards",
+    "CHOLAFIN": "Cholamandalam Investment", "MUTHOOTFIN": "Muthoot Finance", "PFC": "Power Finance Corporation",
+    "RECLTD": "REC", "IOC": "Indian Oil", "GAIL": "GAIL (India)", "HINDPETRO": "Hindustan Petroleum",
+    "TATAPOWER": "Tata Power", "ADANIGREEN": "Adani Green Energy", "ADANIPOWER": "Adani Power",
+    "JINDALSTEL": "Jindal Steel & Power", "SAIL": "Steel Authority of India", "NMDC": "NMDC",
+    "LUPIN": "Lupin", "AUROPHARMA": "Aurobindo Pharma", "TORNTPHARM": "Torrent Pharma", "ZYDUSLIFE": "Zydus Lifesciences",
+    "BIOCON": "Biocon", "MAXHEALTH": "Max Healthcare", "FORTIS": "Fortis Healthcare", "INDHOTEL": "Indian Hotels",
+    "JUBLFOOD": "Jubilant FoodWorks", "PAGEIND": "Page Industries", "BATAINDIA": "Bata India", "VOLTAS": "Voltas",
+    "CANBK": "Canara Bank", "UNIONBANK": "Union Bank of India", "IDFCFIRSTB": "IDFC First Bank",
+    "FEDERALBNK": "Federal Bank", "BANDHANBNK": "Bandhan Bank", "AUBANK": "AU Small Finance Bank",
+    "RVNL": "Rail Vikas Nigam", "IRFC": "Indian Railway Finance Corp", "SUZLON": "Suzlon Energy",
+    "JIOFIN": "Jio Financial Services", "LODHA": "Macrotech Developers (Lodha)", "OBEROIRLTY": "Oberoi Realty",
+    "GODREJPROP": "Godrej Properties",
+})
 
 st.set_page_config(page_title="Forecast Desk", page_icon="📈", layout="wide")
 
@@ -100,19 +127,50 @@ def load_data(ticker: str, period: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def nse_universe():
-    """All NSE-listed equities (about 2,000). Returns ({symbol: name}, loaded_live)."""
+    """All NSE-listed equities. Returns ({symbol: name}, {symbol: listing date}, loaded_live)."""
     try:
-        r = requests.get(NSE_LIST_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        r = requests.get(NSE_LIST_URL, headers={"User-Agent": UA}, timeout=12)
         r.raise_for_status()
         d = pd.read_csv(io.StringIO(r.text))
         d.columns = [c.strip() for c in d.columns]
-        d = d[d["SERIES"].str.strip().isin(["EQ", "BE"])].dropna(subset=["SYMBOL"])
-        out = {str(a).strip(): str(b).strip().title() for a, b in zip(d["SYMBOL"], d["NAME OF COMPANY"])}
-        if len(out) > 500:
-            return dict(sorted(out.items())), True
+        d = d[d["SERIES"].str.strip().isin(["EQ", "BE", "SM", "ST"])].dropna(subset=["SYMBOL"])
+        d["SYMBOL"] = d["SYMBOL"].astype(str).str.strip()
+        names = {a: str(b).strip().title() for a, b in zip(d["SYMBOL"], d["NAME OF COMPANY"])}
+        listed = pd.to_datetime(d["DATE OF LISTING"], format="%d-%b-%Y", errors="coerce")
+        dates = {a: b for a, b in zip(d["SYMBOL"], listed) if pd.notna(b)}
+        if len(names) > 500:
+            return dict(sorted(names.items())), dates, True
     except Exception:
         pass
-    return dict(sorted(FALLBACK.items())), False
+    return dict(sorted(FALLBACK.items())), {}, False
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def upcoming_ipos() -> pd.DataFrame:
+    """Open and upcoming mainboard IPOs from NSE. Empty if NSE blocks the request."""
+    rows = []
+    try:
+        s = requests.Session()
+        s.headers.update({"User-Agent": UA, "Accept": "application/json", "Referer": "https://www.nseindia.com/"})
+        s.get("https://www.nseindia.com", timeout=10)
+        for url in ("https://www.nseindia.com/api/ipo-current-issue",
+                    "https://www.nseindia.com/api/all-upcoming-issues?category=ipo"):
+            try:
+                data = s.get(url, timeout=10).json()
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                data = data.get("data", [])
+            for x in data or []:
+                band = str(x.get("issuePrice") or x.get("priceBand") or "")
+                nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", band.replace(",", ""))]
+                rows.append({"Company": x.get("companyName") or x.get("name") or x.get("symbol"),
+                             "Opens": x.get("issueStartDate") or "", "Closes": x.get("issueEndDate") or "",
+                             "Price band": band, "high": max(nums) if nums else None})
+    except Exception:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    return df.dropna(subset=["Company"]).drop_duplicates("Company") if not df.empty else df
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -200,10 +258,11 @@ def limited_forecast(df: pd.DataFrame, horizon: int) -> dict:
 def run_forecast(ticker: str, period: str, horizon: int, model_name: str) -> dict:
     df = load_data(ticker, period)
     if df.empty:
-        return {"error": f"No price data found for '{ticker}'. Check the symbol (NSE symbols end in .NS, BSE in .BO) "
+        return {"error": f"No price data found for '{ticker}'. Check the symbol (NSE symbols end in .NS) "
                          "or try again later."}
-    if len(df) < 20:
-        return {"error": f"'{ticker}' has only {len(df)} trading days of prices, too few for any forecast."}
+    if len(df) < 5:
+        return {"error": f"'{ticker}' has only {len(df)} trading days of prices. A forecast starts after 5 trading days "
+                         "(use Upcoming IPOs for scenario prices before that)."}
     if len(df) < 200:
         return limited_forecast(df, horizon)
     close, lc = df["Close"], np.log(df["Close"])
@@ -314,26 +373,28 @@ def ticker_tape(quotes: list):
     t.style.animationDuration = Math.max(24, q.length * 6) + 's';
   }
 </script>"""
-    components.html(html.replace("__DATA__", json.dumps(quotes)), height=48)
+    st.iframe(html.replace("__DATA__", json.dumps(quotes)), height=48)
 
 
 def kpi(label, value, sub="", tone=""):
     return f'<div class="kpi {tone}"><div class="l">{label}</div><div class="v">{value}</div><div class="s">{sub}</div></div>'
 
 
-def price_chart(df, fc, last, n, show_ma, show_bb):
+def price_chart(df, fc, last, n, show_ma, show_bb, style="Area"):
     d = df.iloc[-n:]
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.03)
-    fig.add_trace(go.Candlestick(x=d.index, open=d.Open, high=d.High, low=d.Low, close=d.Close, name="Price",
-                                 increasing_line_color=UP, decreasing_line_color=DOWN), 1, 1)
+    up = d.Close.iloc[-1] >= d.Close.iloc[0]
+    trend, tint = (UP, "rgba(19,138,91,0.13)") if up else (DOWN, "rgba(200,55,75,0.13)")
+    fig.add_trace(go.Scatter(x=d.index, y=d.Close, name="Close", line=dict(color=trend, width=2),
+                             fill="tozeroy" if style == "Area" else None, fillcolor=tint), 1, 1)
     if show_ma:
         for k, col in ((20, AMBER), (50, "#6C5CE7")):
             fig.add_trace(go.Scatter(x=d.index, y=df.Close.rolling(k).mean().loc[d.index], name=f"SMA {k}",
                                      line=dict(width=1.3, color=col)), 1, 1)
     if show_bb:
         ma, sd = df.Close.rolling(20).mean(), df.Close.rolling(20).std()
-        for s, nm in ((2, "Upper band"), (-2, "Lower band")):
-            fig.add_trace(go.Scatter(x=d.index, y=(ma + s * sd).loc[d.index], name=nm,
+        for s_, nm in ((2, "Upper band"), (-2, "Lower band")):
+            fig.add_trace(go.Scatter(x=d.index, y=(ma + s_ * sd).loc[d.index], name=nm,
                                      line=dict(width=1, color="#9AA8B8", dash="dot")), 1, 1)
     xs = [d.index[-1]] + list(fc.index)
     hi, lo, mid = [last] + list(fc.hi), [last] + list(fc.lo), [last] + list(fc.price)
@@ -343,12 +404,24 @@ def price_chart(df, fc, last, n, show_ma, show_bb):
                              mode="lines+markers", marker=dict(size=4)), 1, 1)
     fig.add_trace(go.Bar(x=d.index, y=d.Volume, name="Volume", showlegend=False,
                          marker_color=np.where(d.Close >= d.Open, "rgba(19,138,91,.45)", "rgba(200,55,75,.45)")), 2, 1)
-    fig.update_xaxes(rangeslider_visible=False, rangebreaks=[dict(bounds=["sat", "mon"])])
+    # Fit the price axis to what is shown (closing prices + forecast range) instead of letting it stretch to zero.
+    y_lo, y_hi = min(d.Close.min(), fc.lo.min()), max(d.Close.max(), fc.hi.max())
+    pad = (y_hi - y_lo) * 0.06
+    fig.update_yaxes(range=[y_lo - pad, y_hi + pad], row=1, col=1)
+    # "Today" marker where history ends and the forecast begins.
+    fig.add_shape(type="line", xref="x", yref="y domain", x0=d.index[-1], x1=d.index[-1], y0=0, y1=1,
+                  line=dict(color="#9AA8B8", width=1, dash="dot"))
+    # Hide weekends and market holidays so there are no blank gaps in the chart.
+    gaps = pd.bdate_range(d.index[0], d.index[-1]).difference(d.index)
+    breaks = [dict(bounds=["sat", "mon"])]
+    if len(gaps):
+        breaks.append(dict(values=[g.strftime("%Y-%m-%d") for g in gaps]))
+    fig.update_xaxes(rangeslider_visible=False, rangebreaks=breaks, showspikes=True, spikemode="across",
+                     spikethickness=1, spikecolor="#9AA8B8", spikedash="dot")
     fig.update_layout(template="plotly_white", height=560, margin=dict(l=8, r=8, t=10, b=8),
                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#fff", hovermode="x unified",
                       legend=dict(orientation="h", y=1.04), font=dict(family="IBM Plex Sans"))
     return fig
-
 
 
 def render_long(ticker, years, blend):
@@ -379,7 +452,7 @@ def render_long(ticker, years, blend):
     fig.update_layout(template="plotly_white", height=520, margin=dict(l=8, r=8, t=10, b=8),
                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#fff", hovermode="x unified",
                       legend=dict(orientation="h", y=1.05), font=dict(family="IBM Plex Sans"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     t1, t2, t3 = st.tabs(["Year by year", "Reality check", "How it works"])
     with t1:
@@ -388,7 +461,7 @@ def render_long(ticker, years, blend):
             r = fc.iloc[y * 252 - 1]
             rows.append({"Year": y, "Bear case (10th pct)": f"{CUR}{r['lo80']:,.2f}", "Median": f"{CUR}{r['median']:,.2f}",
                          "Bull case (90th pct)": f"{CUR}{r['hi80']:,.2f}", "Median change": f"{(r['median'] / last - 1) * 100:+.0f}%"})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         st.download_button("Download outlook (CSV)", fc.iloc[::21].round(2).to_csv().encode(), f"{ticker}_outlook.csv", "text/csv")
     with t2:
         if res["coverage"] is None:
@@ -409,45 +482,117 @@ def render_long(ticker, years, blend):
             f"- **Not included:** earnings, news, interest rates, or any company-specific change.")
 
 
-# ----------------------------------------------------------------- sidebar
-with st.sidebar:
-    st.markdown("### Find a stock")
-    universe, live = nse_universe()
-    opts = [f"{k} ({v})" for k, v in universe.items()]
+# ----------------------------------------------------------------- stock pickers
+def with_suffix(raw: str, suffix: str) -> str:
+    return raw if "." in raw or raw.startswith("^") else raw + suffix
+
+
+def pick_ticker(kind: str) -> str:
+    names, dates, live = nse_universe()
+    if kind == "Recently listed IPOs":
+        cutoff = pd.Timestamp.today() - pd.Timedelta(days=365)
+        recent = sorted(((d, s_) for s_, d in dates.items() if d >= cutoff), reverse=True)
+        opts = [f"{s_} ({names[s_]}), listed {d:%d %b %Y}" for d, s_ in recent]
+        pick = None
+        if opts:
+            pick = st.selectbox(f"{len(opts)} IPOs listed in the last year", opts,
+                                help="Newest first. Needs 5+ trading days of prices.")
+        else:
+            st.caption("Listing dates need NSE's full list, which couldn't be downloaded. Type a symbol below.")
+        custom = st.text_input("Or type any symbol", "", placeholder="e.g. NEWCO").strip().upper()
+        return with_suffix(custom or (pick.split(" (")[0] if pick else "RELIANCE"), ".NS")
+    opts = [f"{k} ({v})" for k, v in names.items()]
     default = next((i for i, o in enumerate(opts) if o.startswith("RELIANCE (")), 0)
     pick = st.selectbox(f"Search {len(opts):,} NSE stocks", opts, index=default,
                         help="Click the box and type a company name or symbol.")
-    custom = st.text_input("Or type any symbol", "", placeholder="BSE example: 500325.BO").strip().upper()
-    ticker = custom or pick.split(" (")[0]
-    if "." not in ticker and not ticker.startswith("^"):
-        ticker += ".NS"
+    custom = st.text_input("Or type any symbol", "", placeholder="e.g. ZOMATO").strip().upper()
     if not live:
-        st.caption("NSE's full list couldn't be downloaded, so 60 major stocks are listed. "
-                   "You can still type any NSE or BSE symbol above.")
-    CUR = "₹"
-    mode = st.radio("Prediction range", ["Next 1-30 days", "Next 1-5 years"])
-    short = mode.startswith("Next 1-30")
-    if short:
-        with st.form("controls"):
-            period = st.selectbox("Training history", ["2y", "5y", "10y"], index=1)
-            horizon = st.slider("Forecast horizon (trading days)", 1, 30, 10)
-            model_name = st.selectbox("Model", ["Ensemble", "Ridge", "Random Forest", "Gradient Boosting"])
-            st.form_submit_button("Run forecast", type="primary", use_container_width=True)
-        st.markdown("### Chart")
-        window = st.select_slider("Days shown", [60, 120, 250, 500], value=120)
-        show_ma = st.toggle("Moving averages", True)
-        show_bb = st.toggle("Bollinger bands", False)
+        st.caption("NSE's full list couldn't be downloaded, so about 130 major stocks are listed. "
+                   "You can still type any NSE symbol above.")
+    return with_suffix(custom or pick.split(" (")[0], ".NS")
+
+
+def render_ipo():
+    st.markdown("### Upcoming and open IPOs")
+    ipos = upcoming_ipos()
+    name, band_high = "My IPO", None
+    if ipos.empty:
+        st.info("NSE's IPO calendar couldn't be loaded (it sometimes blocks automated requests). "
+                "Enter the IPO's details below instead.")
+        name = st.text_input("Company name", "My IPO")
     else:
-        years = st.slider("Years ahead", 1, 5, 5)
-        blend = st.slider("Weight on this stock's own past growth", 0, 100, 50, format="%d%%") / 100
+        st.dataframe(ipos[["Company", "Opens", "Closes", "Price band"]], hide_index=True, width="stretch")
+        name = st.selectbox("IPO to model", ipos["Company"].tolist())
+        v = ipos.loc[ipos["Company"] == name, "high"].iloc[0]
+        band_high = float(v) if pd.notna(v) else None
+    price = st.number_input("Issue price: top of the price band (₹)", min_value=1.0, value=float(band_high or 100.0),
+                            step=1.0, key=f"issue_{name}")
+    c1, c2, c3 = st.columns(3)
+    gains = [c1.number_input("Weak listing (%)", value=-10.0, step=1.0),
+             c2.number_input("Moderate listing (%)", value=10.0, step=1.0),
+             c3.number_input("Strong listing (%)", value=30.0, step=1.0)]
+    vol = st.slider("Expected daily swing after listing (%)", 1.0, 8.0, 3.0, 0.5) / 100
+    tone = lambda g: "up" if g > 0 else "down" if g < 0 else ""
+    st.markdown('<div class="kpis">' + kpi("Issue price", f"₹{price:,.2f}", name)
+                + "".join(kpi(f"{lab} listing", f"₹{price * (1 + g / 100):,.2f}", f"{g:+.0f}% vs issue price", tone(g))
+                          for lab, g in zip(("Weak", "Moderate", "Strong"), gains)) + "</div>",
+                unsafe_allow_html=True)
+    p0, t = price * (1 + gains[1] / 100), np.arange(0, 21)
+    hi, lo = p0 * np.exp(1.2816 * vol * np.sqrt(t)), p0 * np.exp(-1.2816 * vol * np.sqrt(t))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=list(t) + list(t[::-1]), y=list(hi) + list(lo[::-1]), fill="toself",
+                             fillcolor="rgba(10,124,134,0.16)", line=dict(width=0), name="80% range", hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=t, y=np.full(len(t), p0), name="Moderate listing price",
+                             line=dict(color=TEAL, width=2.4, dash="dash")))
+    fig.update_layout(template="plotly_white", height=360, margin=dict(l=8, r=8, t=10, b=8),
+                      xaxis_title="Trading days after listing", yaxis_title="Price (₹)",
+                      paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=1.1))
+    st.plotly_chart(fig, width="stretch")
+    st.warning("These are scenarios you control, not predictions. An unlisted stock has no price history, so nothing "
+               "can be learned from it. Real listing prices depend on subscription demand, grey-market sentiment and "
+               "market mood. After it lists and has 5+ trading days, pick it under Recently listed IPOs for a "
+               "data-based range.")
+
+
+# ----------------------------------------------------------------- sidebar
+with st.sidebar:
+    st.markdown("### Find a stock")
+    kind = st.radio("List", ["NSE stocks", "Recently listed IPOs", "Upcoming IPOs"])
+    ticker = None
+    if kind == "Upcoming IPOs":
+        st.caption("Open and upcoming IPOs, with listing-price scenarios, appear in the main panel.")
+    else:
+        ticker = pick_ticker(kind)
+        CUR = "₹"
+        mode = st.radio("Prediction range", ["Next 1-30 days", "Next 1-5 years"])
+        short = mode.startswith("Next 1-30")
+        if short:
+            with st.form("controls"):
+                period = st.selectbox("Training history", ["2y", "5y", "10y"], index=1)
+                horizon = st.slider("Forecast horizon (trading days)", 1, 30, 10)
+                model_name = st.selectbox("Model", ["Ensemble", "Ridge", "Random Forest", "Gradient Boosting"])
+                st.form_submit_button("Run forecast", type="primary", width="stretch")
+            st.markdown("### Chart")
+            rng = st.segmented_control("Chart range", list(RANGES), default="6M") or "6M"
+            window = RANGES[rng]
+            style = st.segmented_control("Chart style", ["Area", "Line"], default="Area") or "Area"
+            show_ma = st.toggle("Moving averages", True)
+            show_bb = st.toggle("Bollinger bands", False)
+        else:
+            years = st.slider("Years ahead", 1, 5, 5)
+            blend = st.slider("Weight on this stock's own past growth", 0, 100, 50, format="%d%%") / 100
     st.caption("Educational tool. Not financial advice.")
 
 # ----------------------------------------------------------------- main page
 ticker_tape(tape_quotes(TAPE_INDIA))
 st.markdown('<h1 class="title">Forecast desk</h1>'
-            '<p class="sub">Search any NSE-listed stock, then see the next days (machine learning, with a backtest) or the next '
+            '<p class="sub">Search any NSE stock, a recent IPO, or explore upcoming IPOs, then see the next days (machine learning, with a backtest) or the next '
             'five years (a range of outcomes, not a single guess).</p>',
             unsafe_allow_html=True)
+
+if kind == "Upcoming IPOs":
+    render_ipo()
+    st.stop()
 
 if not short:
     render_long(ticker, years, blend)
@@ -463,7 +608,8 @@ chg = (fc.price.iloc[-1] / last - 1) * 100
 if res.get("limited"):
     st.info(f"{ticker} has only {len(df)} trading days of history, too few to train or backtest a model. "
             "This is a volatility range around today's price with no trend assumed. "
-            "Full model forecasts unlock at about 200 days of history.")
+            "Full model forecasts unlock at about 200 days of history."
+            + (" With under 20 days the range is very rough." if len(df) < 20 else ""))
 tone = "up" if res["lean"] == "Bullish" else "down" if res["lean"] == "Bearish" else ""
 st.markdown(
     '<div class="kpis">'
@@ -476,7 +622,11 @@ st.markdown(
     + "</div>",
     unsafe_allow_html=True,
 )
-st.plotly_chart(price_chart(df, fc, last, window, show_ma, show_bb), use_container_width=True)
+st.plotly_chart(price_chart(df, fc, last, window, show_ma, show_bb, style), width="stretch",
+                config={"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]})
+_d = df.iloc[-window:]
+st.caption(f"{rng}: {(_d.Close.iloc[-1] / _d.Close.iloc[0] - 1) * 100:+.1f}% over {len(_d)} trading days. "
+           f"High {CUR}{_d.High.max():,.2f}, low {CUR}{_d.Low.min():,.2f}.")
 
 t1, t2, t3, t4 = st.tabs(["Backtest", "Indicators", "What drives it", "Data"])
 
@@ -490,7 +640,7 @@ with t1:
         fig.add_trace(go.Scatter(x=bt.index, y=bt.naive, name="Naive (no change)", line=dict(color="#9AA8B8", dash="dot")))
         fig.update_layout(template="plotly_white", height=380, margin=dict(l=8, r=8, t=10, b=8),
                           paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=1.1))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         c1, c2, c3 = st.columns(3)
         c1.metric("Average error", f"{CUR}{m['mae']:,.2f}")
         c2.metric("Error as % of price", f"{m['mape']:.2f}%")
@@ -512,7 +662,7 @@ with t2:
                          marker_color=np.where(f.macd_hist >= 0, UP, DOWN)), 2, 1)
     fig.update_layout(template="plotly_white", height=460, showlegend=False, margin=dict(l=8, r=8, t=30, b=8),
                       paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     rsi = float(res["feats"].rsi.iloc[-1])
     st.caption(f"RSI is {rsi:.0f}: " + ("above 70, often read as overbought." if rsi > 70 else
                "below 30, often read as oversold." if rsi < 30 else "in the neutral zone."))
@@ -525,10 +675,10 @@ with t3:
         fig = go.Figure(go.Bar(x=imp.values * 100, y=imp.index, orientation="h", marker_color=TEAL))
         fig.update_layout(template="plotly_white", height=380, margin=dict(l=8, r=8, t=10, b=8),
                           xaxis_title="Share of model weight (%)", paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.caption("Features are technical signals: returns, moving-average distance, RSI, MACD, Bollinger position, "
                    "volatility and volume.")
 
 with t4:
-    st.dataframe(df.join(res["feats"][["rsi"]]).tail(250).round(2), use_container_width=True)
+    st.dataframe(df.join(res["feats"][["rsi"]]).tail(250).round(2), width="stretch")
     st.download_button("Download forecast (CSV)", fc.round(2).to_csv().encode(), f"{ticker}_forecast.csv", "text/csv")
