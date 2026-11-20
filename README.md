@@ -6,16 +6,19 @@ A Streamlit web app that forecasts Indian (NSE) stock prices. Search any NSE-lis
 
 ## Features
 
-- **Search about 2,000 NSE stocks** by company name or symbol. The list is downloaded from NSE and cached for a day.
-- **Any NSE or BSE symbol** can also be typed in directly, for example `ZOMATO` or `500325.BO`.
+- **Three lists to pick from:** NSE stocks (about 2,000), Recently listed IPOs, and Upcoming IPOs. The list is downloaded from NSE and cached for a day.
+- **Search by name or symbol.** You can also type any NSE symbol directly, for example `ZOMATO`.
+- **Recently listed IPOs:** every NSE stock listed in the last year, newest first, forecastable from 5 trading days of prices.
+- **Upcoming IPOs:** open and upcoming issues from NSE's calendar (or entered by hand) with weak, moderate and strong listing-price scenarios and a 20-day range. These are scenarios you control, not predictions, because an unlisted stock has no price history.
 - **Short-term forecast (1-30 trading days)** using Ridge, Random Forest, Gradient Boosting, or an Ensemble of all three. Shows an 80% range around the forecast.
 - **Honest backtest.** The model trains on the first 80% of history and is tested on the last 20%, compared against a "price stays the same" baseline. The app tells you when the model fails to beat it.
 - **Long-term outlook (1-5 years)** as a range of outcomes (bear, median, bull) based on the stock's own volatility and a growth assumption you can tune. Includes a reality check of how often past ranges held.
+- **Flexible price chart:** range buttons (1M, 3M, 6M, 1Y, 2Y, All), Area or Line styles, a "today" marker, hidden market holidays, and a price axis fitted to the data. Moving averages and Bollinger bands can be toggled.
 - **Technical indicators:** RSI, MACD, moving averages, Bollinger bands.
 - **Model drivers:** which signals the models rely on most.
 - **Live ticker bar** with NIFTY 50, SENSEX and large Indian stocks.
 - **CSV downloads** for forecasts and outlooks.
-- **New listings handled:** stocks with 20-199 trading days of history get a volatility range instead of a trained model.
+- **New listings handled:** stocks with 5-199 trading days of history get a volatility range instead of a trained model (very rough under 20 days).
 
 ## Quick start
 
@@ -40,7 +43,7 @@ The app opens at http://localhost:8501.
 
 ## How to use it
 
-1. Click the stock box in the sidebar and type a company name or symbol, or use "Or type any symbol".
+1. Choose a list in the sidebar (NSE stocks, Recently listed IPOs or Upcoming IPOs), then click the stock box and type a name or symbol, or use the "Or type any symbol" box.
 2. Choose a **Prediction range**:
    - **Next 1-30 days:** pick the training history (default 5 years), the horizon and the model, then press **Run forecast**.
    - **Next 1-5 years:** pick the years ahead (default 5) and how much weight to give the stock's own past growth.
@@ -70,8 +73,8 @@ stock_forecast/
 | History available | What you get |
 | --- | --- |
 | 200+ trading days | Full model forecast and backtest |
-| 20-199 trading days | Volatility range only, no trend, no backtest |
-| Under 20 days | A message that there is too little data |
+| 5-199 trading days | Volatility range only, no trend, no backtest (very rough under 20 days) |
+| Under 5 days | A message that there is too little data. Use Upcoming IPOs for scenario prices |
 | About 2+ years | Needed for the 1-5 year outlook |
 
 ## Deploy online
@@ -84,8 +87,9 @@ The quickest way is [Streamlit Community Cloud](https://streamlit.io/cloud):
 
 ## Troubleshooting
 
-- **"No price data found":** check the symbol. NSE symbols end in `.NS` (added automatically in the stock box) and BSE symbols in `.BO`. Delisted, suspended and some SME stocks are not available on Yahoo Finance.
-- **"NSE's full list couldn't be downloaded":** the app falls back to 60 major stocks. You can still type any symbol. Try again later or check your connection.
+- **"No price data found":** check the symbol. NSE symbols end in `.NS` (added automatically in the stock box). Delisted, suspended and some SME stocks are not available on Yahoo Finance.
+- **"NSE's full list couldn't be downloaded":** the app falls back to a built-in list of about 130 major NSE stocks. You can still type any symbol. The IPO list needs NSE's full list for listing dates. Try again later or check your connection.
+- **"NSE's IPO calendar couldn't be loaded":** NSE sometimes blocks automated requests. Enter the company and price band by hand instead.
 - **Slow or empty results:** Yahoo Finance sometimes rate-limits requests. Wait a minute and run again, and update `yfinance` with `pip install -U yfinance`.
 - **First forecast takes a few seconds:** models are trained on demand. Results are cached for 15 minutes.
 
@@ -98,3 +102,4 @@ The quickest way is [Streamlit Community Cloud](https://streamlit.io/cloud):
 ## License and disclaimer
 
 This project is for learning and research. Nothing it shows is investment advice. Do your own research or consult a SEBI-registered advisor before making financial decisions.
+
